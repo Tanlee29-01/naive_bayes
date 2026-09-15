@@ -10,9 +10,14 @@ import pandas as pd
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from src.danh_gia import CustomEvaluator, CustomStratifiedKFold
+from src.danh_gia import CustomEvaluator, CustomGridSearchCV
 from src.thuat_toan_nb import CustomGaussianNB
-from src.tien_xu_ly import CustomStandardScaler, custom_train_test_split
+from src.tien_xu_ly import (
+    CustomIQROutlierRemover,
+    CustomMissingValueImputer,
+    CustomStandardScaler,
+    custom_train_test_split,
+)
 
 DATA_PATH = PROJECT_DIR / "data" / "customer_purchase_data.csv"
 OUTPUT_DIR = PROJECT_DIR / "outputs"
@@ -39,27 +44,33 @@ def run_pipeline():
     print("Training summary:\n", train_frame.describe().round(3))
     print("Training correlation:\n", train_frame.corr(numeric_only=True).round(3))
 
-    # 4. Cross-validation fits a fresh scaler inside each fold.
-    cv = CustomStratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = []
-    for fold_number, (fold_train, fold_valid) in enumerate(cv.split(X_train_raw, y_train), start=1):
-        fold_scaler = CustomStandardScaler().fit(X_train_raw[fold_train])
-        fold_model = CustomGaussianNB(var_smoothing=1e-9).fit(
-            fold_scaler.transform(X_train_raw[fold_train]), y_train[fold_train]
-        )
-        fold_predictions = fold_model.predict(fold_scaler.transform(X_train_raw[fold_valid]))
-        score = CustomEvaluator.metrics(y_train[fold_valid], fold_predictions)
-        cv_scores.append(score)
-        print(f"Fold {fold_number} accuracy: {score['accuracy']:.4f}")
+    # 4. Every preprocessing statistic is learned from train only.
+    imputer = CustomMissingValueImputer(strategy="mean").fit(X_train_raw)
+    X_train_imputed = imputer.transform(X_train_raw)
+    X_test_imputed = imputer.transform(X_test_raw)
+    outlier_remover = CustomIQROutlierRemover().fit(X_train_imputed)
+    X_train_clean, y_train_clean = outlier_remover.fit_transform(X_train_imputed, y_train)
+    X_test_clean = outlier_remover.transform(X_test_imputed)
+    scaler = CustomStandardScaler().fit(X_train_clean)
+    X_train = scaler.transform(X_train_clean)
+    X_test = scaler.transform(X_test_clean)
 
-    cv_accuracy = np.mean([score["accuracy"] for score in cv_scores])
-    print(f"Mean CV accuracy: {cv_accuracy:.4f}")
+    # 5. Tune only inside the training partition.
+    grid_search = CustomGridSearchCV(
+        CustomGaussianNB,
+        param_grid=[1e-9, 1e-8, 1e-7, 1e-5, 1e-3, 1e-1],
+        n_splits=5,
+        random_state=42,
+    ).fit(X_train, y_train_clean)
+    print("\nCross-validation results:")
+    for result in grid_search.cv_results_:
+        print(f"var_smoothing={result['var_smoothing']:.0e}")
+        for name in ("accuracy", "precision", "recall", "f1_score", "roc_auc"):
+            print(f"  {name}: mean={result['mean_' + name]:.4f}, std={result['std_' + name]:.4f}")
+    print("Best parameters:", grid_search.best_params_)
 
-    # Fit preprocessing only on all training data, then transform frozen test data.
-    scaler = CustomStandardScaler().fit(X_train_raw)
-    X_train = scaler.transform(X_train_raw)
-    X_test = scaler.transform(X_test_raw)
-    model = CustomGaussianNB(var_smoothing=1e-9).fit(X_train, y_train)
+    # 6. Fit the selected model on all cleaned training data.
+    model = CustomGaussianNB(**grid_search.best_params_).fit(X_train, y_train_clean)
 
     # 6. Final evaluation is performed once on the untouched test partition.
     predictions = model.predict(X_test)
@@ -75,7 +86,8 @@ def run_pipeline():
         print(f"{name}: {value:.4f}")
     print("Confusion matrix (rows=true, columns=predicted), labels", labels.tolist())
     print(matrix)
-    print(f"ROC AUC: {roc_auc:.4f}")
+    metrics["roc_auc"] = roc_auc
+    print(f"roc_auc: {roc_auc:.4f}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     _save_plots(train_frame, fpr, tpr, roc_auc, matrix, labels)

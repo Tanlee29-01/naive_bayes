@@ -23,10 +23,10 @@ ML_NaiveBayes/
 ├── data/
 │   └── customer_purchase_data.csv        # Bộ dữ liệu gốc
 ├── src/
-│   ├── __init__.py                 
-│   ├── tien_xu_ly.py               # Chứa hàm custom_train_test_split và class CustomStandardScaler
-│   ├── thuat_toan_nb.py            # Chứa class CustomGaussianNB (tính Log-Probability, var_smoothing)
-│   └── danh_gia.py                 # Chứa class CustomStratifiedKFold và CustomEvaluator
+│   ├── __init__.py
+│   ├── tien_xu_ly.py               # Split, imputer, encoder, IQR, scaler, oversampling
+│   ├── thuat_toan_nb.py            # CustomGaussianNB và var_smoothing
+│   └── danh_gia.py                 # K-Fold, evaluator và CustomGridSearchCV
 ├── chay_thu_nghiem.py              # File chính chạy toàn bộ pipeline
 └── README.md                       # Hướng dẫn chạy code và giải thích pipeline
 
@@ -41,11 +41,11 @@ File `chay_thu_nghiem.py` phải thực thi một luồng pipeline hoàn chỉnh
 3. **Khám phá & Trực quan hóa dữ liệu (EDA trên tập Train):** Thực hiện tính toán thống kê (xem phân bố, tìm độ tương quan, phát hiện dị biệt) CHỈ dựa trên tập Train.
 
 
-4. **Tiền xử lý (Fit trên Train, Transform trên Test):** Mọi phép xử lý được đóng gói theo cơ chế Học tham số trên tập Train (`.fit()`) và Áp dụng tham số đó sang tập Test (`.transform()`). Sử dụng `CustomStandardScaler` để tính mean và std trên tập Train, sau đó áp dụng biến đổi cho cả hai tập.
-5. **Huấn luyện & Tinh chỉnh mô hình (Training & Cross-Validation):** Sử dụng `CustomStratifiedKFold` (chia K-Fold) ngay bên trong tập Train để huấn luyện `CustomGaussianNB`. Mọi thử nghiệm đánh giá nội bộ chỉ diễn ra trong phạm vi tập Train để tránh quá khớp (overfitting).
+4. **Tiền xử lý (Fit trên Train, Transform trên Test):** Mọi class xử lý phải có `fit`, `transform`, `fit_transform`. Imputer tính mean/median/mode chỉ trên train và điền cho cả hai tập. Encoder học vocabulary từ train; nhãn lạ trên test phải được ánh xạ về `unknown_value` (mặc định `-1`). IQR/Z-score chỉ được tìm và xóa dòng ngoại lệ trên train; tuyệt đối không xóa dòng test. `CustomStandardScaler` tính mean/std trên train và chuẩn hóa cả hai tập bằng mẫu số `std + epsilon`, với `epsilon = 1e-9`. Oversampling/undersampling (nếu dùng) chỉ được áp dụng cho train sau split.
 
+5. **Huấn luyện & Tinh chỉnh mô hình (Training, Tuning & Cross-Validation):** Sử dụng `CustomStratifiedKFold(n_splits=5)` bên trong train. Trước khi chia fold, phải kiểm tra số mẫu của mọi lớp lớn hơn hoặc bằng `n_splits`; nếu không thì ném `ValueError` rõ ràng. `CustomGridSearchCV` phải thử `[1e-9, 1e-8, 1e-7, 1e-5, 1e-3, 1e-1]` cho `var_smoothing`. Mỗi fold tính Accuracy, Precision, Recall, F1-Score và ROC-AUC; báo cáo mean và std. Chọn tham số có F1 trung bình cao nhất, dùng ROC-AUC làm tiêu chí phụ và ưu tiên Recall/F1 khi dữ liệu mất cân bằng.
 
-6. **Đánh giá cuối cùng trên tập Test (Final Evaluation):** Đưa tập Test (đã qua biến đổi `.transform()`) vào mô hình `CustomGaussianNB` để tính toán các chỉ số thực tế qua `CustomEvaluator` (Accuracy, Precision, Recall, F1-Score, vẽ ROC Curve, Confusion Matrix). Kết quả này phản ánh chính xác khả năng tổng quát hóa của mô hình.
+6. **Đánh giá cuối cùng trên tập Test (Final Evaluation & Edge Cases):** Fit mô hình tốt nhất trên toàn bộ train đã xử lý, sau đó dùng test đã `transform()` để gọi `predict` và `predict_proba`. `CustomEvaluator` phải kiểm tra độ dài mọi mảng, không được dùng `zip()` để âm thầm bỏ phần dư; dữ liệu rỗng phải được chặn bằng lỗi rõ ràng hoặc giá trị 0 an toàn. Các metric nhị phân mặc định `positive_label=1`; Precision/Recall/F1 bằng 0 khi mẫu số bằng 0. Báo cáo bắt buộc gồm Accuracy, Precision, Recall, F1-Score và ROC-AUC; lưu `confusion_matrix.png` và `roc_curve.png`.
 
 
 
